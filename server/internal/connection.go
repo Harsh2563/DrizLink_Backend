@@ -5,9 +5,12 @@ import (
 	"drizlink/server/interfaces"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func Connect(address string) (net.Listener, error) {
@@ -24,27 +27,20 @@ func Close(conn net.Conn) {
 }
 
 func Start(server *interfaces.Server) {
-	listen, err := net.Listen("tcp", server.Address)
-	if err != nil {
-		fmt.Println("error in listen")
-		panic(err)
-	}
-
-	defer listen.Close()
-	fmt.Println("Server started on", server.Address)
-
-	for {
-		conn, err := listen.Accept()
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := server.Upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			fmt.Println("error in accept")
-			continue
+			fmt.Println("WebSocket upgrade failed:", err)
+			return
 		}
-
-		go HandleConnection(conn, server)
-	}
+		defer conn.Close()
+		HandleConnection(conn, server)
+	})
+	fmt.Println("Listening on", server.Address)
+	http.ListenAndServe(server.Address, nil)
 }
 
-func HandleConnection(conn net.Conn, server *interfaces.Server) {
+func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 	ipAddr := conn.RemoteAddr().String()
 	ip := strings.Split(ipAddr, ":")[0]
 	fmt.Println("New connection from", ip)
@@ -73,27 +69,24 @@ func HandleConnection(conn net.Conn, server *interfaces.Server) {
 	// 	return
 	// }
 
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
+	_, username, err := conn.ReadMessage()
 	if err != nil {
-		fmt.Println("error in read username")
+		fmt.Println("Error reading username:", err)
 		return
 	}
-	username := string(buffer[:n])
 
-	n, err = conn.Read(buffer)
+	_, storeFilePath, err := conn.ReadMessage()
 	if err != nil {
-		fmt.Println("error in read storeFilePath")
+		fmt.Println("Error reading store file path:", err)
 		return
 	}
-	storeFilePath := string(buffer[:n])
 
 	userId := helper.GenerateUserId()
 
 	user := &interfaces.User{
 		UserId:        userId,
-		Username:      username,
-		StoreFilePath: storeFilePath,
+		Username:      string(username),
+		StoreFilePath: string(storeFilePath),
 		Conn:          conn,
 		IsOnline:      true,
 		IpAddress:     ip,
@@ -113,10 +106,9 @@ func HandleConnection(conn net.Conn, server *interfaces.Server) {
 	handleUserMessages(conn, user, server)
 }
 
-func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces.Server) {
+func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *interfaces.Server) {
 	for {
-		buffer := make([]byte, 1024)
-		n, err := conn.Read(buffer)
+		_, message, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Printf("User disconnected: %s\n", user.Username)
 			server.Mutex.Lock()
@@ -127,7 +119,7 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 			return
 		}
 
-		messageContent := string(buffer[:n])
+		messageContent := string(message)
 
 		switch {
 		case messageContent == "/exit":
@@ -231,7 +223,10 @@ func BroadcastMessage(content string, server *interfaces.Server, sender *interfa
 	defer server.Mutex.Unlock()
 	for _, recipient := range server.Connections {
 		if recipient.IsOnline && recipient != sender {
-			_, _ = recipient.Conn.Write([]byte(fmt.Sprintf("%s: %s\n", sender.Username, content)))
+			err := recipient.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("%s: %s\n", sender.Username, content)))
+			if err != nil {
+				fmt.Printf("Error broadcasting message to %s: %v\n", recipient.Username, err)
+			}
 		}
 	}
 }
@@ -243,7 +238,7 @@ func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 			server.Mutex.Lock()
 			for _, user := range server.Connections {
 				if user.IsOnline {
-					_, err := user.Conn.Write([]byte("PING\n"))
+					err := user.Conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second))
 					if err != nil {
 						fmt.Printf("User disconnected: %s\n", user.Username)
 						user.IsOnline = false
