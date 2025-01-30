@@ -85,17 +85,30 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 	// 	return
 	// }
 
-	_, username, err := conn.ReadMessage()
+	// Set read deadline for initial handshake
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+	// Read username
+	_, usernameBytes, err := conn.ReadMessage()
 	if err != nil {
-		fmt.Println("Error reading username:", err)
+		fmt.Println("Failed to read username:", err)
+		conn.Close()
 		return
 	}
 
-	_, storeFilePath, err := conn.ReadMessage()
+	// Read folder path
+	_, folderPathBytes, err := conn.ReadMessage()
 	if err != nil {
-		fmt.Println("Error reading store file path:", err)
+		fmt.Println("Failed to read folder path:", err)
+		conn.Close()
 		return
 	}
+
+	// Reset read deadline
+	conn.SetReadDeadline(time.Time{})
+
+	username := string(usernameBytes)
+	storeFilePath := string(folderPathBytes)
 
 	userId := helper.GenerateUserId()
 
