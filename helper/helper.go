@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,17 @@ import (
 
 func GenerateUserId() string {
 	return strconv.Itoa(rand.Intn(10000000))
+}
+
+// Helper function to check if route is registered
+func IsRouteRegistered(mux *http.ServeMux, path string) bool {
+	if mux == nil {
+		return false
+	}
+
+	req, _ := http.NewRequest("GET", path, nil)
+	_, pattern := mux.Handler(req)
+	return pattern == path
 }
 
 // CreateZipFromFolder creates a zip archive from a folder

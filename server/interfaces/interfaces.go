@@ -1,6 +1,7 @@
 package interfaces
 
 import (
+	"net/http"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -13,6 +14,8 @@ type Server struct {
 	Messages    chan Message
 	Mutex       sync.Mutex
 	Upgrader    websocket.Upgrader
+	Mux         *http.ServeMux
+	Running     bool
 }
 
 type Message struct {

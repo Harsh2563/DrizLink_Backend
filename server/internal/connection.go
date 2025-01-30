@@ -6,28 +6,28 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-func Connect(address string) (net.Listener, error) {
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		fmt.Println("Error connecting to server:", err)
-		return nil, err
+func Start(server *interfaces.Server) error {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+
+	// Check if server is already running
+	if server.Running {
+		return fmt.Errorf("server is already running")
 	}
-	return listener, nil
-}
 
-func Close(conn net.Conn) {
-	conn.Close()
-}
+	// Create a new ServeMux if none exists
+	if server.Mux == nil {
+		server.Mux = http.NewServeMux()
+	}
 
-func Start(server *interfaces.Server) {
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	// Register the WebSocket route
+	server.Mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := server.Upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			fmt.Println("WebSocket upgrade failed:", err)
@@ -36,8 +36,24 @@ func Start(server *interfaces.Server) {
 		defer conn.Close()
 		HandleConnection(conn, server)
 	})
-	fmt.Println("Listening on", server.Address)
-	http.ListenAndServe(server.Address, nil)
+
+	// Start the server in a goroutine
+	go func() {
+		fmt.Println("WebSocket server starting on", server.Address)
+		if err := http.ListenAndServe(server.Address, server.Mux); err != nil {
+			fmt.Println("WebSocket server failed to start:", err)
+		}
+	}()
+
+	// Validate that the server is running
+	time.Sleep(100 * time.Millisecond) // Give the server a moment to start
+	_, err := net.Dial("tcp", server.Address)
+	if err != nil {
+		return fmt.Errorf("server failed to start: %v", err)
+	}
+
+	server.Running = true
+	return nil
 }
 
 func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
@@ -122,96 +138,96 @@ func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *int
 		messageContent := string(message)
 
 		switch {
-		case messageContent == "/exit":
-			server.Mutex.Lock()
-			user.IsOnline = false
-			server.Mutex.Unlock()
-			offlineMsg := fmt.Sprintf("User %s is now offline", user.Username)
-			BroadcastMessage(offlineMsg, server, user)
-			return
-		case strings.HasPrefix(messageContent, "/FILE_REQUEST"):
-			args := strings.SplitN(messageContent, " ", 4)
-			if len(args) != 4 {
-				fmt.Println("Invalid arguments. Use: /FILE_REQUEST <userId> <filename> <fileSize>")
-				continue
-			}
-			recipientId := args[1]
-			fileName := args[2]
-			fileSizeStr := strings.TrimSpace(args[3])
-			fileSize, err := strconv.ParseInt(fileSizeStr, 10, 64)
-			if err != nil {
-				fmt.Println("Invalid fileSize. Use: /FILE_REQUEST <userId> <filename> <fileSize>")
-				continue
-			}
+		// case messageContent == "/exit":
+		// 	server.Mutex.Lock()
+		// 	user.IsOnline = false
+		// 	server.Mutex.Unlock()
+		// 	offlineMsg := fmt.Sprintf("User %s is now offline", user.Username)
+		// 	BroadcastMessage(offlineMsg, server, user)
+		// 	return
+		// case strings.HasPrefix(messageContent, "/FILE_REQUEST"):
+		// 	args := strings.SplitN(messageContent, " ", 4)
+		// 	if len(args) != 4 {
+		// 		fmt.Println("Invalid arguments. Use: /FILE_REQUEST <userId> <filename> <fileSize>")
+		// 		continue
+		// 	}
+		// 	recipientId := args[1]
+		// 	fileName := args[2]
+		// 	fileSizeStr := strings.TrimSpace(args[3])
+		// 	fileSize, err := strconv.ParseInt(fileSizeStr, 10, 64)
+		// 	if err != nil {
+		// 		fmt.Println("Invalid fileSize. Use: /FILE_REQUEST <userId> <filename> <fileSize>")
+		// 		continue
+		// 	}
 
-			HandleFileTransfer(server, conn, recipientId, fileName, fileSize)
-			continue
-		case strings.HasPrefix(messageContent, "/FOLDER_REQUEST"):
-			args := strings.SplitN(messageContent, " ", 4)
-			if len(args) != 4 {
-				fmt.Println("Invalid arguments. Use: /FOLDER_REQUEST <userId> <folderName> <folderSize>")
-				continue
-			}
-			recipientId := args[1]
-			folderName := args[2]
-			folderSizeStr := strings.TrimSpace(args[3])
-			folderSize, err := strconv.ParseInt(folderSizeStr, 10, 64)
-			if err != nil {
-				fmt.Println("Invalid folderSize. Use: /FOLDER_REQUEST <userId> <folderName> <folderSize>")
-				continue
-			}
+		// 	HandleFileTransfer(server, conn, recipientId, fileName, fileSize)
+		// 	continue
+		// case strings.HasPrefix(messageContent, "/FOLDER_REQUEST"):
+		// 	args := strings.SplitN(messageContent, " ", 4)
+		// 	if len(args) != 4 {
+		// 		fmt.Println("Invalid arguments. Use: /FOLDER_REQUEST <userId> <folderName> <folderSize>")
+		// 		continue
+		// 	}
+		// 	recipientId := args[1]
+		// 	folderName := args[2]
+		// 	folderSizeStr := strings.TrimSpace(args[3])
+		// 	folderSize, err := strconv.ParseInt(folderSizeStr, 10, 64)
+		// 	if err != nil {
+		// 		fmt.Println("Invalid folderSize. Use: /FOLDER_REQUEST <userId> <folderName> <folderSize>")
+		// 		continue
+		// 	}
 
-			HandleFolderTransfer(server, conn, recipientId, folderName, folderSize)
-			continue
-		case messageContent == "PONG\n":
-			continue
-		case strings.HasPrefix(messageContent, "/status"):
-			_, err = conn.Write([]byte("USERS:"))
-			if err != nil {
-				fmt.Println("Error sending user list header:", err)
-				continue
-			}
-			for _, user := range server.Connections {
-				if user.IsOnline {
-					statusMsg := fmt.Sprintf("%s is online\n", user.Username)
-					_, err = conn.Write([]byte(statusMsg))
-					if err != nil {
-						fmt.Println("Error sending user list:", err)
-						continue
-					}
-				}
-			}
-			continue
-		case strings.HasPrefix(messageContent, "/LOOK"):
-			args := strings.SplitN(messageContent, " ", 2)
-			if len(args) != 2 {
-				fmt.Println("Invalid arguments. Use: /LOOK <userId>")
-				continue
-			}
-			recipientId := strings.TrimSpace(args[1])
-			HandleLookupRequest(server, conn, recipientId)
-			continue
-		case strings.HasPrefix(messageContent, "/DIR_LISTING"):
-			args := strings.SplitN(messageContent, " ", 3)
-			if len(args) != 3 {
-				fmt.Println("Invalid arguments. Use: /DIR_LISTING <userId> <files>")
-				continue
-			}
-			userId := strings.TrimSpace(args[1])
-			files := strings.TrimSpace(args[2])
-			HandleLookupResponse(server, conn, userId, strings.Split(files, " "))
-			continue
-		case strings.HasPrefix(messageContent, "/DOWNLOAD_REQUEST"):
-			args := strings.SplitN(messageContent, " ", 3)
-			if len(args) != 3 {
-				fmt.Println("Invalid arguments. Use: /DOWNLOAD_REQUEST <userId> <filename>")
-				continue
-			}
-			senderId := strings.TrimSpace(args[1])
-			recipientId := user.UserId
-			filePath := strings.TrimSpace(args[2])
-			HandleDownloadRequest(server, conn, senderId, recipientId, filePath)
-			continue
+		// 	// HandleFolderTransfer(server, conn, recipientId, folderName, folderSize)
+		// 	continue
+		// case messageContent == "PONG\n":
+		// 	continue
+		// case strings.HasPrefix(messageContent, "/status"):
+		// 	_, err = conn.Write([]byte("USERS:"))
+		// 	if err != nil {
+		// 		fmt.Println("Error sending user list header:", err)
+		// 		continue
+		// 	}
+		// 	for _, user := range server.Connections {
+		// 		if user.IsOnline {
+		// 			statusMsg := fmt.Sprintf("%s is online\n", user.Username)
+		// 			_, err = conn.Write([]byte(statusMsg))
+		// 			if err != nil {
+		// 				fmt.Println("Error sending user list:", err)
+		// 				continue
+		// 			}
+		// 		}
+		// 	}
+		// 	continue
+		// case strings.HasPrefix(messageContent, "/LOOK"):
+		// 	args := strings.SplitN(messageContent, " ", 2)
+		// 	if len(args) != 2 {
+		// 		fmt.Println("Invalid arguments. Use: /LOOK <userId>")
+		// 		continue
+		// 	}
+		// 	recipientId := strings.TrimSpace(args[1])
+		// 	HandleLookupRequest(server, conn, recipientId)
+		// 	continue
+		// case strings.HasPrefix(messageContent, "/DIR_LISTING"):
+		// 	args := strings.SplitN(messageContent, " ", 3)
+		// 	if len(args) != 3 {
+		// 		fmt.Println("Invalid arguments. Use: /DIR_LISTING <userId> <files>")
+		// 		continue
+		// 	}
+		// 	userId := strings.TrimSpace(args[1])
+		// 	files := strings.TrimSpace(args[2])
+		// 	HandleLookupResponse(server, conn, userId, strings.Split(files, " "))
+		// 	continue
+		// case strings.HasPrefix(messageContent, "/DOWNLOAD_REQUEST"):
+		// 	args := strings.SplitN(messageContent, " ", 3)
+		// 	if len(args) != 3 {
+		// 		fmt.Println("Invalid arguments. Use: /DOWNLOAD_REQUEST <userId> <filename>")
+		// 		continue
+		// 	}
+		// 	senderId := strings.TrimSpace(args[1])
+		// 	recipientId := user.UserId
+		// 	filePath := strings.TrimSpace(args[2])
+		// 	HandleDownloadRequest(server, conn, senderId, recipientId, filePath)
+		// 	continue
 		default:
 			BroadcastMessage(messageContent, server, user)
 		}
