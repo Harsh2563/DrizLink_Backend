@@ -33,3 +33,15 @@ type User struct {
 	IsOnline      bool
 	IpAddress     string
 }
+
+type UserData struct {
+	Username   string
+	FolderPath string
+}
+
+type MessageData struct {
+	Id        string
+	Content   string
+	Timestamp string
+	Sender    string
+}

@@ -3,6 +3,7 @@ package connection
 import (
 	"drizlink/helper"
 	"drizlink/server/interfaces"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -96,10 +97,9 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 		return
 	}
 
-	// Read folder path
-	_, folderPathBytes, err := conn.ReadMessage()
-	if err != nil {
-		fmt.Println("Failed to read folder path:", err)
+	var userData interfaces.UserData
+	if err := json.Unmarshal(usernameBytes, &userData); err != nil {
+		fmt.Println("Invalid username format:", err)
 		conn.Close()
 		return
 	}
@@ -107,15 +107,15 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 	// Reset read deadline
 	conn.SetReadDeadline(time.Time{})
 
-	username := string(usernameBytes)
-	storeFilePath := string(folderPathBytes)
+	username := userData.Username
+	storeFilePath := userData.FolderPath
 
 	userId := helper.GenerateUserId()
 
 	user := &interfaces.User{
 		UserId:        userId,
-		Username:      string(username),
-		StoreFilePath: string(storeFilePath),
+		Username:      username,
+		StoreFilePath: storeFilePath,
 		Conn:          conn,
 		IsOnline:      true,
 		IpAddress:     ip,
@@ -127,7 +127,18 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 	server.Mutex.Unlock()
 
 	welcomeMsg := fmt.Sprintf("User %s has joined the chat", username)
-	BroadcastMessage(welcomeMsg, server, user)
+	var msgData interfaces.MessageData
+	msgData.Content = welcomeMsg
+	msgData.Sender = username
+	msgData.Timestamp = time.Now().Format(time.RFC3339)
+	msgData.Id = user.UserId
+	jsonData, err := json.Marshal(msgData)
+	if err != nil {
+		fmt.Println("Error marshalling message:", err)
+		return
+	}
+
+	BroadcastMessage(string(jsonData), server, user)
 
 	fmt.Printf("New user connected: %s (ID: %s)\n", username, userId)
 
