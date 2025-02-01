@@ -41,8 +41,15 @@ type UserData struct {
 }
 
 type MessageData struct {
-	Id        string
-	Content   string
-	Timestamp string
-	Sender    string
+	Id        string `json:"d"`
+	Content   string `json:"content"`
+	Sender    string `json:"sender"`
+	Timestamp string `json:"timestamp"`
+	File      *File  `json:"file,omitempty"`
+}
+
+type File struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+	Type string `json:"type"`
 }

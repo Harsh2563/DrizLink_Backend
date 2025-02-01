@@ -29,7 +29,18 @@ func Stop(server *interfaces.Server) error {
 	// Close all existing connections
 	for _, user := range server.Connections {
 		if user.Conn != nil {
-			user.Conn.WriteMessage(websocket.TextMessage, []byte("Server is shutting down"))
+			BroadcastMessage(interfaces.MessageData{
+				Id:        helper.GenerateUserId(),
+				Content:   "Server is not active",
+				Sender:    "System",
+				Timestamp: time.Now().Format(time.RFC3339),
+			}, server,
+				&interfaces.User{
+					UserId:        user.UserId,
+					IpAddress:     user.IpAddress,
+					Username:      user.Username,
+					StoreFilePath: user.StoreFilePath,
+				})
 			user.Conn.Close()
 		}
 	}
@@ -108,7 +119,13 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	server.Mutex.Lock()
 	if !server.Running {
 		server.Mutex.Unlock()
-		BroadcastMessage("Server is not active", server, nil)
+		message := interfaces.MessageData{
+			Id:        helper.GenerateUserId(),
+			Content:   "Server is not active",
+			Sender:    "System",
+			Timestamp: time.Now().Format(time.RFC3339),
+		}
+		BroadcastMessage(message, server, nil)
 		conn.Close()
 		return fmt.Errorf("server is not active")
 	}
@@ -182,19 +199,14 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	server.IpAddresses[ip] = user
 	server.Mutex.Unlock()
 
-	welcomeMsg := fmt.Sprintf("User %s has joined the chat", username)
-	var msgData interfaces.MessageData
-	msgData.Content = welcomeMsg
-	msgData.Sender = username
-	msgData.Timestamp = time.Now().Format(time.RFC3339)
-	msgData.Id = user.UserId
-	jsonData, err := json.Marshal(msgData)
-	if err != nil {
-		fmt.Println("Error marshalling message:", err)
-		return fmt.Errorf("error marshalling message: %v", err)
+	welcomeMsg := interfaces.MessageData{
+		Id:        helper.GenerateUserId(),
+		Content:   fmt.Sprintf("User %s has joined the chat", username),
+		Sender:    "System",
+		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
-	BroadcastMessage(string(jsonData), server, user)
+	BroadcastMessage(welcomeMsg, server, user)
 
 	fmt.Printf("New user connected: %s (ID: %s)\n", username, userId)
 
@@ -204,143 +216,83 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 }
 
 func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *interfaces.Server) error {
-	if !server.Running {
-		// Send server inactive message
-		BroadcastMessage("Server is not active", server, &interfaces.User{
-			UserId:        "",
-			Username:      "System",
-			StoreFilePath: "",
-			Conn:          nil,
-			IsOnline:      true,
-			IpAddress:     "",
-		})
-		conn.Close()
-		return fmt.Errorf("server is not running")
-	}
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			fmt.Printf("User disconnected: %s\n", user.Username)
-			server.Mutex.Lock()
-			user.IsOnline = false
-			server.Mutex.Unlock()
-			offlineMsg := fmt.Sprintf("User %s is now offline", user.Username)
+			// Handle disconnect
+			offlineMsg := interfaces.MessageData{
+				Id:        helper.GenerateUserId(),
+				Content:   fmt.Sprintf("User %s has disconnected", user.Username),
+				Sender:    "System",
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
 			BroadcastMessage(offlineMsg, server, user)
 			return fmt.Errorf("user disconnected: %v", err)
 		}
 
-		messageContent := string(message)
-
-		switch {
-		// case messageContent == "/exit":
-		// 	server.Mutex.Lock()
-		// 	user.IsOnline = false
-		// 	server.Mutex.Unlock()
-		// 	offlineMsg := fmt.Sprintf("User %s is now offline", user.Username)
-		// 	BroadcastMessage(offlineMsg, server, user)
-		// 	return
-		// case strings.HasPrefix(messageContent, "/FILE_REQUEST"):
-		// 	args := strings.SplitN(messageContent, " ", 4)
-		// 	if len(args) != 4 {
-		// 		fmt.Println("Invalid arguments. Use: /FILE_REQUEST <userId> <filename> <fileSize>")
-		// 		continue
-		// 	}
-		// 	recipientId := args[1]
-		// 	fileName := args[2]
-		// 	fileSizeStr := strings.TrimSpace(args[3])
-		// 	fileSize, err := strconv.ParseInt(fileSizeStr, 10, 64)
-		// 	if err != nil {
-		// 		fmt.Println("Invalid fileSize. Use: /FILE_REQUEST <userId> <filename> <fileSize>")
-		// 		continue
-		// 	}
-
-		// 	HandleFileTransfer(server, conn, recipientId, fileName, fileSize)
-		// 	continue
-		// case strings.HasPrefix(messageContent, "/FOLDER_REQUEST"):
-		// 	args := strings.SplitN(messageContent, " ", 4)
-		// 	if len(args) != 4 {
-		// 		fmt.Println("Invalid arguments. Use: /FOLDER_REQUEST <userId> <folderName> <folderSize>")
-		// 		continue
-		// 	}
-		// 	recipientId := args[1]
-		// 	folderName := args[2]
-		// 	folderSizeStr := strings.TrimSpace(args[3])
-		// 	folderSize, err := strconv.ParseInt(folderSizeStr, 10, 64)
-		// 	if err != nil {
-		// 		fmt.Println("Invalid folderSize. Use: /FOLDER_REQUEST <userId> <folderName> <folderSize>")
-		// 		continue
-		// 	}
-
-		// 	// HandleFolderTransfer(server, conn, recipientId, folderName, folderSize)
-		// 	continue
-		// case messageContent == "PONG\n":
-		// 	continue
-		// case strings.HasPrefix(messageContent, "/status"):
-		// 	_, err = conn.Write([]byte("USERS:"))
-		// 	if err != nil {
-		// 		fmt.Println("Error sending user list header:", err)
-		// 		continue
-		// 	}
-		// 	for _, user := range server.Connections {
-		// 		if user.IsOnline {
-		// 			statusMsg := fmt.Sprintf("%s is online\n", user.Username)
-		// 			_, err = conn.Write([]byte(statusMsg))
-		// 			if err != nil {
-		// 				fmt.Println("Error sending user list:", err)
-		// 				continue
-		// 			}
-		// 		}
-		// 	}
-		// 	continue
-		// case strings.HasPrefix(messageContent, "/LOOK"):
-		// 	args := strings.SplitN(messageContent, " ", 2)
-		// 	if len(args) != 2 {
-		// 		fmt.Println("Invalid arguments. Use: /LOOK <userId>")
-		// 		continue
-		// 	}
-		// 	recipientId := strings.TrimSpace(args[1])
-		// 	HandleLookupRequest(server, conn, recipientId)
-		// 	continue
-		// case strings.HasPrefix(messageContent, "/DIR_LISTING"):
-		// 	args := strings.SplitN(messageContent, " ", 3)
-		// 	if len(args) != 3 {
-		// 		fmt.Println("Invalid arguments. Use: /DIR_LISTING <userId> <files>")
-		// 		continue
-		// 	}
-		// 	userId := strings.TrimSpace(args[1])
-		// 	files := strings.TrimSpace(args[2])
-		// 	HandleLookupResponse(server, conn, userId, strings.Split(files, " "))
-		// 	continue
-		// case strings.HasPrefix(messageContent, "/DOWNLOAD_REQUEST"):
-		// 	args := strings.SplitN(messageContent, " ", 3)
-		// 	if len(args) != 3 {
-		// 		fmt.Println("Invalid arguments. Use: /DOWNLOAD_REQUEST <userId> <filename>")
-		// 		continue
-		// 	}
-		// 	senderId := strings.TrimSpace(args[1])
-		// 	recipientId := user.UserId
-		// 	filePath := strings.TrimSpace(args[2])
-		// 	HandleDownloadRequest(server, conn, senderId, recipientId, filePath)
-		// 	continue
-		default:
-			BroadcastMessage(messageContent, server, user)
+		var incomingMsg interfaces.MessageData
+		if err := json.Unmarshal(message, &incomingMsg); err != nil {
+			// Handle invalid message format
+			errorMsg := interfaces.MessageData{
+				Id:        helper.GenerateUserId(),
+				Content:   "Invalid message format",
+				Sender:    "System",
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+			BroadcastMessage(errorMsg, server, user)
+			continue
 		}
+
+		// Validate required fields
+		if incomingMsg.Content == "" || incomingMsg.Sender == "" {
+			errorMsg := interfaces.MessageData{
+				Id:        helper.GenerateUserId(),
+				Content:   "Message missing required fields",
+				Sender:    "System",
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+			BroadcastMessage(errorMsg, server, user)
+			continue
+		}
+
+		// Add server-side metadata
+		outgoingMsg := interfaces.MessageData{
+			Id:        helper.GenerateUserId(),
+			Content:   incomingMsg.Content,
+			Sender:    user.Username,
+			Timestamp: time.Now().Format(time.RFC3339),
+			File:      incomingMsg.File,
+		}
+
+		BroadcastMessage(outgoingMsg, server, user)
 	}
 }
 
-func BroadcastMessage(content string, server *interfaces.Server, sender *interfaces.User) {
+func BroadcastMessage(msgData interfaces.MessageData, server *interfaces.Server, sender *interfaces.User) {
 	server.Mutex.Lock()
 	defer server.Mutex.Unlock()
+
+	jsonData, err := json.Marshal(msgData)
+	if err != nil {
+		fmt.Printf("Error marshalling message: %v\n", err)
+		return
+	}
+
 	for _, recipient := range server.Connections {
 		if recipient.IsOnline && recipient != sender {
-			err := recipient.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("%s: %s\n", sender.Username, content)))
-			if err != nil {
-				fmt.Printf("Error broadcasting message to %s: %v\n", recipient.Username, err)
+			if recipient.Conn != nil {
+				err := recipient.Conn.WriteMessage(websocket.TextMessage, jsonData)
+				if err != nil {
+					fmt.Printf("Error broadcasting to %s: %v\n", recipient.Username, err)
+					// Handle disconnected users
+					recipient.IsOnline = false
+					delete(server.Connections, recipient.UserId)
+					delete(server.IpAddresses, recipient.IpAddress)
+				}
 			}
 		}
 	}
 }
-
 func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 	ticker := time.NewTicker(interval)
 	go func() {
@@ -348,11 +300,25 @@ func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 			server.Mutex.Lock()
 			for _, user := range server.Connections {
 				if user.IsOnline {
-					err := user.Conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second))
+					// Send proper ping message
+					pingMsg := interfaces.MessageData{
+						Id:        helper.GenerateUserId(),
+						Content:   "ping",
+						Sender:    "System",
+						Timestamp: time.Now().Format(time.RFC3339),
+					}
+					jsonData, _ := json.Marshal(pingMsg)
+
+					err := user.Conn.WriteControl(websocket.PingMessage, jsonData, time.Now().Add(time.Second))
 					if err != nil {
-						fmt.Printf("User disconnected: %s\n", user.Username)
 						user.IsOnline = false
-						BroadcastMessage(fmt.Sprintf("User %s is now offline", user.Username), server, user)
+						offlineMsg := interfaces.MessageData{
+							Id:        helper.GenerateUserId(),
+							Content:   fmt.Sprintf("User %s is now offline", user.Username),
+							Sender:    "System",
+							Timestamp: time.Now().Format(time.RFC3339),
+						}
+						BroadcastMessage(offlineMsg, server, user)
 					}
 				}
 			}
