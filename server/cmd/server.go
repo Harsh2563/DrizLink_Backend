@@ -63,8 +63,8 @@ func CloseConnection(ip string) {
 	}
 }
 
-func CloseServer(ip string) error {
-	if err := connection.Stop(&server, ip); err != nil {
+func CloseServer() error {
+	if err := connection.Stop(&server); err != nil {
 		return err
 	}
 	return nil

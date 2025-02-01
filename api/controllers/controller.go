@@ -115,7 +115,7 @@ func CloseServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := server.CloseServer(req.IP); err != nil {
+	if err := server.CloseServer(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(Response{
 			Error: "Failed to close server: " + err.Error(),

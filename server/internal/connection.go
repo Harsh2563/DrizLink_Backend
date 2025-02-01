@@ -14,7 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func Stop(server *interfaces.Server, ip string) error {
+func Stop(server *interfaces.Server) error {
 	server.Mutex.Lock()
 	defer server.Mutex.Unlock()
 
