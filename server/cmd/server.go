@@ -62,3 +62,10 @@ func CloseConnection(ip string) {
 		delete(server.IpAddresses, ip)
 	}
 }
+
+func CloseServer(ip string) error {
+	if err := connection.Stop(&server, ip); err != nil {
+		return err
+	}
+	return nil
+}

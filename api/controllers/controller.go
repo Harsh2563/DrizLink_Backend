@@ -102,3 +102,29 @@ func CloseConnection(w http.ResponseWriter, r *http.Request) {
 		Message: "Connection closed",
 	})
 }
+
+func CloseServer(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var req IPRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	if err := server.CloseServer(req.IP); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Failed to close server: " + err.Error(),
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(Response{
+		Message: "Server successfully closed",
+	})
+}

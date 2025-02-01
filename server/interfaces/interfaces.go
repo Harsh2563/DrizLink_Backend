@@ -14,6 +14,7 @@ type Server struct {
 	Messages    chan Message
 	Mutex       sync.Mutex
 	Upgrader    websocket.Upgrader
+	HttpServer  *http.Server
 	Mux         *http.ServeMux
 	Running     bool
 }

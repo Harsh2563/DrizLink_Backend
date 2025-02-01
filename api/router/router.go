@@ -11,4 +11,5 @@ func SetupRoutes() {
 	http.HandleFunc("/api/start", middleware.CorsMiddleware(controllers.StartServer))
 	http.HandleFunc("/api/getUsers", middleware.CorsMiddleware(controllers.GetUsers))
 	http.HandleFunc("/api/close-connection", middleware.CorsMiddleware(controllers.CloseConnection))
+	http.HandleFunc("/api/close-server", middleware.CorsMiddleware(controllers.CloseServer))
 }

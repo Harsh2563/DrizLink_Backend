@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"drizlink/helper"
 	"drizlink/server/interfaces"
 	"encoding/json"
@@ -12,6 +13,44 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+func Stop(server *interfaces.Server, ip string) error {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+
+	// Check if server is running
+	if !server.Running {
+		return fmt.Errorf("server is not running")
+	}
+
+	// Set server as not running first to prevent new connections
+	server.Running = false
+
+	// Close all existing connections
+	for _, user := range server.Connections {
+		if user.Conn != nil {
+			user.Conn.WriteMessage(websocket.TextMessage, []byte("Server is shutting down"))
+			user.Conn.Close()
+		}
+	}
+
+	// Close the HTTP server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.HttpServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("server shutdown error: %v", err)
+	}
+
+	// Clean up server state
+	server.Connections = make(map[string]*interfaces.User)
+	server.IpAddresses = make(map[string]*interfaces.User)
+	server.Address = ""
+	server.Mux = nil
+	server.HttpServer = nil
+
+	return nil
+}
 
 func Start(server *interfaces.Server) error {
 	server.Mutex.Lock()
@@ -35,8 +74,16 @@ func Start(server *interfaces.Server) error {
 			return
 		}
 		defer conn.Close()
-		HandleConnection(conn, server)
+		if err := HandleConnection(conn, server); err != nil {
+			fmt.Println("Error handling connection:", err)
+		}
 	})
+
+	// Create HTTP server instance
+	server.HttpServer = &http.Server{
+		Addr:    server.Address,
+		Handler: server.Mux,
+	}
 
 	// Start the server in a goroutine
 	go func() {
@@ -57,7 +104,16 @@ func Start(server *interfaces.Server) error {
 	return nil
 }
 
-func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
+func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
+	server.Mutex.Lock()
+	if !server.Running {
+		server.Mutex.Unlock()
+		BroadcastMessage("Server is not active", server, nil)
+		conn.Close()
+		return fmt.Errorf("server is not active")
+	}
+	server.Mutex.Unlock()
+
 	ipAddr := conn.RemoteAddr().String()
 	ip := strings.Split(ipAddr, ":")[0]
 	fmt.Println("New connection from", ip)
@@ -94,14 +150,14 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 	if err != nil {
 		fmt.Println("Failed to read username:", err)
 		conn.Close()
-		return
+		return fmt.Errorf("failed to read username: %v", err)
 	}
 
 	var userData interfaces.UserData
 	if err := json.Unmarshal(usernameBytes, &userData); err != nil {
 		fmt.Println("Invalid username format:", err)
 		conn.Close()
-		return
+		return fmt.Errorf("invalid username format: %v", err)
 	}
 
 	// Reset read deadline
@@ -135,7 +191,7 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 	jsonData, err := json.Marshal(msgData)
 	if err != nil {
 		fmt.Println("Error marshalling message:", err)
-		return
+		return fmt.Errorf("error marshalling message: %v", err)
 	}
 
 	BroadcastMessage(string(jsonData), server, user)
@@ -144,9 +200,23 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) {
 
 	// Start handling messages for the new user
 	handleUserMessages(conn, user, server)
+	return nil
 }
 
-func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *interfaces.Server) {
+func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *interfaces.Server) error {
+	if !server.Running {
+		// Send server inactive message
+		BroadcastMessage("Server is not active", server, &interfaces.User{
+			UserId:        "",
+			Username:      "System",
+			StoreFilePath: "",
+			Conn:          nil,
+			IsOnline:      true,
+			IpAddress:     "",
+		})
+		conn.Close()
+		return fmt.Errorf("server is not running")
+	}
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -156,7 +226,7 @@ func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *int
 			server.Mutex.Unlock()
 			offlineMsg := fmt.Sprintf("User %s is now offline", user.Username)
 			BroadcastMessage(offlineMsg, server, user)
-			return
+			return fmt.Errorf("user disconnected: %v", err)
 		}
 
 		messageContent := string(message)
