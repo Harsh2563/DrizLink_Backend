@@ -74,3 +74,31 @@ func GetUsers(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(users)
 	w.WriteHeader(http.StatusOK)
 }
+
+func CloseConnection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Only POST method is allowed",
+		})
+		return
+	}
+
+	var req IPRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	// Close the websocket connection
+	server.CloseConnection(req.IP)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(Response{
+		Message: "Connection closed",
+	})
+}

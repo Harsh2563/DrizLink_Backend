@@ -52,3 +52,13 @@ func GetConnectedUsers() []interfaces.User {
 	}
 	return users
 }
+
+func CloseConnection(ip string) {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+	if user, ok := server.Connections[ip]; ok {
+		user.Conn.Close()
+		delete(server.Connections, ip)
+		delete(server.IpAddresses, ip)
+	}
+}
