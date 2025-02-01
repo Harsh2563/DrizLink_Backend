@@ -57,3 +57,20 @@ func StartServer(w http.ResponseWriter, r *http.Request) {
 		Message: "WebSocket server started on " + req.IP + ":8080",
 	})
 }
+
+func GetUsers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Only GET method is allowed",
+		})
+		return
+	}
+
+	// Get a list of all connected users
+	users := server.GetConnectedUsers()
+	json.NewEncoder(w).Encode(users)
+	w.WriteHeader(http.StatusOK)
+}

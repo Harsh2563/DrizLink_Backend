@@ -10,6 +10,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var server interfaces.Server
+
 func StartServer(ip string) error {
 	//Intialize websocket upgrader
 	upgrader := websocket.Upgrader{
@@ -21,7 +23,7 @@ func StartServer(ip string) error {
 	}
 
 	//Initialize server
-	server := interfaces.Server{
+	server = interfaces.Server{
 		Address:     ip + ":8080",
 		Connections: make(map[string]*interfaces.User),
 		IpAddresses: make(map[string]*interfaces.User),
@@ -39,4 +41,14 @@ func StartServer(ip string) error {
 	}
 
 	return nil
+}
+
+func GetConnectedUsers() []interfaces.User {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+	users := make([]interfaces.User, 0, len(server.Connections))
+	for _, user := range server.Connections {
+		users = append(users, *user)
+	}
+	return users
 }
