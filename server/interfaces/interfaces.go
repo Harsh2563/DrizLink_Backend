@@ -41,7 +41,7 @@ type UserData struct {
 }
 
 type MessageData struct {
-	Id        string `json:"d"`
+	Id        string `json:"id"`
 	Content   string `json:"content"`
 	Sender    string `json:"sender"`
 	Timestamp string `json:"timestamp"`
