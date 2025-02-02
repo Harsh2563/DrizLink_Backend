@@ -37,6 +37,7 @@ type User struct {
 }
 
 type UserData struct {
+	ID         string
 	Username   string
 	FolderPath string
 }

@@ -189,29 +189,29 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	fmt.Println("New connection from", ip)
 
 	// Check if user is already connected
-	if existingUser := server.IpAddresses[ip]; existingUser != nil {
-		server.Mutex.Lock()
-		// Close old connection if it exists
-		if existingUser.Conn != nil {
-			existingUser.Conn.Close()
-		}
-		// Update connection and online status
-		existingUser.Conn = conn
-		existingUser.IsOnline = true
-		server.Mutex.Unlock()
+	// if existingUser := server.IpAddresses[ip]; existingUser != nil {
+	// 	server.Mutex.Lock()
+	// 	// Close old connection if it exists
+	// 	if existingUser.Conn != nil {
+	// 		existingUser.Conn.Close()
+	// 	}
+	// 	// Update connection and online status
+	// 	existingUser.Conn = conn
+	// 	existingUser.IsOnline = true
+	// 	server.Mutex.Unlock()
 
-		// Broadcast reconnection message
-		welcomeMsg := interfaces.MessageData{
-			Id:        helper.GenerateUserId(),
-			Content:   fmt.Sprintf("User %s has reconnected", existingUser.Username),
-			Sender:    "System",
-			Timestamp: time.Now().Format(time.RFC3339),
-		}
-		go BroadcastMessage(welcomeMsg, server, existingUser)
+	// 	// Broadcast reconnection message
+	// 	welcomeMsg := interfaces.MessageData{
+	// 		Id:        helper.GenerateUserId(),
+	// 		Content:   fmt.Sprintf("User %s has reconnected", existingUser.Username),
+	// 		Sender:    "System",
+	// 		Timestamp: time.Now().Format(time.RFC3339),
+	// 	}
+	// 	go BroadcastMessage(welcomeMsg, server, existingUser)
 
-		handleUserMessages(conn, existingUser, server)
-		return nil
-	}
+	// 	handleUserMessages(conn, existingUser, server)
+	// 	return nil
+	// }
 
 	// Set read deadline for initial handshake
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -234,7 +234,7 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 
 	// Create new user
 	user := &interfaces.User{
-		UserId:        helper.GenerateUserId(),
+		UserId:        userData.ID,
 		Username:      userData.Username,
 		StoreFilePath: userData.FolderPath,
 		Conn:          conn,
