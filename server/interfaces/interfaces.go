@@ -8,6 +8,7 @@ import (
 )
 
 type Server struct {
+	ServerId    string
 	Address     string
 	Connections map[string]*User
 	IpAddresses map[string]*User

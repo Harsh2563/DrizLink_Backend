@@ -73,8 +73,32 @@ func GetUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var req IPRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	if req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Error: "IP address is required",
+		})
+		return
+	}
+
 	// Get a list of all connected users
-	users := server.GetConnectedUsers()
+	users, err := server.GetConnectedUsers(req.IP)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Failed to get connected users: " + err.Error(),
+		})
+		return
+	}
 	json.NewEncoder(w).Encode(users)
 	w.WriteHeader(http.StatusOK)
 }
@@ -90,7 +114,10 @@ func CloseConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req IDRequest
+	var req struct {
+		ID string `json:"id"`
+		IP string `json:"ip"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{
@@ -99,8 +126,16 @@ func CloseConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ID == "" || req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Error: "ID and IP are required",
+		})
+		return
+	}
+
 	// Close the websocket connection
-	server.CloseConnection(req.ID)
+	server.CloseConnection(req.ID, req.IP)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(Response{
 		Message: "Connection closed",
@@ -110,7 +145,32 @@ func CloseConnection(w http.ResponseWriter, r *http.Request) {
 func CloseServer(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if err := server.CloseServer(); err != nil {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Only POST method is allowed",
+		})
+		return
+	}
+
+	var req IPRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Error: "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	if req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Error: "IP is required",
+		})
+		return
+	}
+
+	if err := server.CloseServer(req.IP); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(Response{
 			Error: "Failed to close server: " + err.Error(),
