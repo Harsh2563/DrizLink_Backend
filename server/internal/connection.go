@@ -29,7 +29,7 @@ func Stop(server *interfaces.Server) error {
 	// Close all existing connections
 	for _, user := range server.Connections {
 		if user.Conn != nil {
-			BroadcastMessage(interfaces.MessageData{
+			go BroadcastMessage(interfaces.MessageData{
 				Id:        helper.GenerateUserId(),
 				Content:   "Server is not active",
 				Sender:    "System",
@@ -115,6 +115,41 @@ func Start(server *interfaces.Server) error {
 	return nil
 }
 
+func StopUser(id string, server *interfaces.Server) error {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+
+	if !server.Running {
+		return fmt.Errorf("server is not running")
+	}
+
+	user, ok := server.Connections[id]
+
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+
+	if user.Conn != nil {
+		go BroadcastMessage(interfaces.MessageData{
+			Id:        helper.GenerateUserId(),
+			Content:   "User " + user.Username + " has left the chat",
+			Sender:    "System",
+			Timestamp: time.Now().Format(time.RFC3339),
+		}, server,
+			&interfaces.User{
+				UserId:        user.UserId,
+				IpAddress:     user.IpAddress,
+				Username:      user.Username,
+				StoreFilePath: user.StoreFilePath,
+			})
+		user.Conn.Close()
+		delete(server.Connections, id)
+		// delete(server.IpAddresses, user.IpAddress)
+	}
+
+	return nil
+}
+
 func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	server.Mutex.Lock()
 	if !server.Running {
@@ -125,7 +160,7 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 			Sender:    "System",
 			Timestamp: time.Now().Format(time.RFC3339),
 		}
-		BroadcastMessage(message, server, nil)
+		go BroadcastMessage(message, server, nil)
 		conn.Close()
 		return fmt.Errorf("server is not active")
 	}
@@ -137,12 +172,12 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	// if existingUser := server.IpAddresses[ip]; existingUser != nil {
 	// 	fmt.Println("Connection already exists for IP:", ip)
 	// 	// Send reconnection signal with existing user data
-	// 	reconnectMsg := fmt.Sprintf("/RECONNECT %s %s", existingUser.Username, existingUser.StoreFilePath)
-	// 	_, err := conn.Write([]byte(reconnectMsg))
-	// 	if err != nil {
-	// 		fmt.Println("Error sending reconnect signal:", err)
-	// 		return
-	// 	}
+	// 	// reconnectMsg := fmt.Sprintf("/RECONNECT %s %s", existingUser.Username, existingUser.StoreFilePath)
+	// 	// _, err := conn.Write([]byte(reconnectMsg))
+	// 	// if err != nil {
+	// 	// 	fmt.Println("Error sending reconnect signal:", err)
+	// 	// 	return
+	// 	// }
 
 	// 	// Update connection and online status
 	// 	server.Mutex.Lock()
@@ -151,12 +186,12 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	// 	server.Mutex.Unlock()
 
 	// 	// Encrypt and broadcast welcome back message
-	// 	welcomeMsg := fmt.Sprintf("User %s has rejoined the chat", existingUser.Username)
-	// 	BroadcastMessage(welcomeMsg, server)
+	// 	// welcomeMsg := fmt.Sprintf("User %s has rejoined the chat", existingUser.Username)
+	// 	// BroadcastMessage(welcomeMsg, server)
 
-	// 	// Start handling messages for the reconnected user
-	// 	handleUserMessages(conn, existingUser, server)
-	// 	return
+	// 	// // Start handling messages for the reconnected user
+	// 	// handleUserMessages(conn, existingUser, server)
+	// 	return nil
 	// }
 
 	// Set read deadline for initial handshake
@@ -206,7 +241,7 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
-	BroadcastMessage(welcomeMsg, server, user)
+	go BroadcastMessage(welcomeMsg, server, user)
 
 	fmt.Printf("New user connected: %s (ID: %s)\n", username, userId)
 
@@ -226,7 +261,7 @@ func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *int
 				Sender:    "System",
 				Timestamp: time.Now().Format(time.RFC3339),
 			}
-			BroadcastMessage(offlineMsg, server, user)
+			go BroadcastMessage(offlineMsg, server, user)
 			return fmt.Errorf("user disconnected: %v", err)
 		}
 
@@ -239,7 +274,7 @@ func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *int
 				Sender:    "System",
 				Timestamp: time.Now().Format(time.RFC3339),
 			}
-			BroadcastMessage(errorMsg, server, user)
+			go BroadcastMessage(errorMsg, server, user)
 			continue
 		}
 
@@ -251,7 +286,7 @@ func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *int
 				Sender:    "System",
 				Timestamp: time.Now().Format(time.RFC3339),
 			}
-			BroadcastMessage(errorMsg, server, user)
+			go BroadcastMessage(errorMsg, server, user)
 			continue
 		}
 
@@ -264,7 +299,7 @@ func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *int
 			File:      incomingMsg.File,
 		}
 
-		BroadcastMessage(outgoingMsg, server, user)
+		go BroadcastMessage(outgoingMsg, server, user)
 	}
 }
 
@@ -278,21 +313,42 @@ func BroadcastMessage(msgData interfaces.MessageData, server *interfaces.Server,
 		return
 	}
 
-	for _, recipient := range server.Connections {
-		if recipient.IsOnline && recipient != sender {
-			if recipient.Conn != nil {
-				err := recipient.Conn.WriteMessage(websocket.TextMessage, jsonData)
-				if err != nil {
-					fmt.Printf("Error broadcasting to %s: %v\n", recipient.Username, err)
-					// Handle disconnected users
-					recipient.IsOnline = false
-					delete(server.Connections, recipient.UserId)
+	for userId, recipient := range server.Connections {
+		// Skip if recipient is the sender or not online
+		if recipient == sender || !recipient.IsOnline {
+			continue
+		}
+
+		// Skip if connection is nil
+		if recipient.Conn == nil {
+			recipient.IsOnline = false
+			delete(server.Connections, userId)
+			continue
+		}
+
+		// Try to write the message
+		err := recipient.Conn.WriteMessage(websocket.TextMessage, jsonData)
+		if err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") ||
+				strings.Contains(err.Error(), "broken pipe") ||
+				strings.Contains(err.Error(), "connection reset by peer") {
+				// Connection is closed, update user status
+				recipient.IsOnline = false
+				delete(server.Connections, userId)
+				if recipient.IpAddress != "" {
 					delete(server.IpAddresses, recipient.IpAddress)
 				}
+
+				// Log the disconnection
+				fmt.Printf("User %s disconnected, removing from active connections\n", recipient.Username)
+			} else {
+				// Log other types of errors
+				fmt.Printf("Error broadcasting to %s: %v\n", recipient.Username, err)
 			}
 		}
 	}
 }
+
 func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 	ticker := time.NewTicker(interval)
 	go func() {

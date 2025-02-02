@@ -10,6 +10,10 @@ type IPRequest struct {
 	IP string `json:"ip"`
 }
 
+type IDRequest struct {
+	ID string `json:"id"`
+}
+
 type Response struct {
 	Message string `json:"message"`
 	Error   string `json:"error,omitempty"`
@@ -86,7 +90,7 @@ func CloseConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req IPRequest
+	var req IDRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{
@@ -96,7 +100,7 @@ func CloseConnection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Close the websocket connection
-	server.CloseConnection(req.IP)
+	server.CloseConnection(req.ID)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(Response{
 		Message: "Connection closed",
@@ -105,15 +109,6 @@ func CloseConnection(w http.ResponseWriter, r *http.Request) {
 
 func CloseServer(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	var req IPRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{
-			Error: "Invalid request body: " + err.Error(),
-		})
-		return
-	}
 
 	if err := server.CloseServer(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
