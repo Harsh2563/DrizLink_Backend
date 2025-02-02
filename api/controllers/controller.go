@@ -65,10 +65,10 @@ func StartServer(w http.ResponseWriter, r *http.Request) {
 func GetUsers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(Response{
-			Error: "Only GET method is allowed",
+			Error: "Only POST method is allowed",
 		})
 		return
 	}
