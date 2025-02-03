@@ -30,6 +30,53 @@ var (
 	ErrMaxConnections       = fmt.Errorf("maximum connections reached")
 )
 
+// WebSocket Message Types
+const (
+	MsgTypeSystem    = "system"
+	MsgTypeFileReq   = "file_request"
+	MsgTypeFileRes   = "file_response"
+	MsgTypeFolderReq = "folder_request"
+	MsgTypeFolderRes = "folder_response"
+	MsgTypeLookupReq = "lookup_request"
+	MsgTypeLookupRes = "lookup_response"
+	MsgTypeHeartbeat = "heartbeat"
+	MsgTypeUserList  = "user_list"
+	MsgTypeError     = "error"
+)
+
+type FileRequest struct {
+	RecipientID string `json:"recipientId"`
+	Filename    string `json:"filename"`
+	Filesize    int64  `json:"filesize"`
+	FilePath    string `json:"filePath"`
+}
+
+type FileResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type WSMessage struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+type LookupRequest struct {
+	UserID string `json:"userId"`
+}
+
+type LookupResponse struct {
+	UserID string      `json:"userId"`
+	Files  []FileEntry `json:"files"`
+}
+
+type FileEntry struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+	Name string `json:"name"`
+}
+
 // Stop shuts down the server and cleans up resources.
 func Stop(server *interfaces.Server) error {
 	server.Mutex.Lock()
@@ -50,7 +97,11 @@ func Stop(server *interfaces.Server) error {
 			wg.Add(1)
 			go func(u *interfaces.User) {
 				defer wg.Done()
-				u.Conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseGoingAway, "Server shutting down"), time.Now().Add(BroadcastTimeout))
+				msg := WSMessage{
+					Type:    MsgTypeSystem,
+					Payload: json.RawMessage(`{"message": "Server shutting down"}`),
+				}
+				u.Conn.WriteJSON(msg)
 				u.Conn.Close()
 			}(user)
 		}
@@ -171,14 +222,6 @@ func StopUser(id string, server *interfaces.Server) (*interfaces.User, error) {
 func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	server.Mutex.Lock()
 	if !server.Running {
-		server.Mutex.Unlock()
-		message := interfaces.MessageData{
-			Id:        helper.GenerateUserId(),
-			Content:   "Server is not active",
-			Sender:    "System",
-			Timestamp: time.Now().Format(time.RFC3339),
-		}
-		go BroadcastMessage(message, server, nil)
 		conn.Close()
 		return ErrServerNotRunning
 	}
@@ -216,50 +259,55 @@ func HandleConnection(conn *websocket.Conn, server *interfaces.Server) error {
 	// Set read deadline for initial handshake
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
-	// Read username
-	_, userInfoBytes, err := conn.ReadMessage()
-	if err != nil {
+	var msg WSMessage
+	if err := conn.ReadJSON(&msg); err != nil {
+		fmt.Println("Error reading initial message:", err)
+		return err
+	}
+	// Validate message type
+	if msg.Type != "connection-request" {
+		sendError(conn, "invalid initial message type")
 		conn.Close()
-		return fmt.Errorf("failed to read username: %v", err)
+		return fmt.Errorf("invalid initial message type: %s", msg.Type)
 	}
 
-	var userData interfaces.UserData
-	if err := json.Unmarshal(userInfoBytes, &userData); err != nil {
-		conn.Close()
-		return fmt.Errorf("invalid username format: %v", err)
+	var userData struct {
+		ID         string `json:"id"`
+		Username   string `json:"username"`
+		FolderPath string `json:"folderPath"`
 	}
 
-	// Reset read deadline
-	conn.SetReadDeadline(time.Time{})
+	if err := json.Unmarshal(msg.Payload, &userData); err != nil {
+		sendError(conn, "invalid user data format")
+		return err
+	}
 
-	// Create new user
+	// Create user object
 	user := &interfaces.User{
 		UserId:        userData.ID,
 		Username:      userData.Username,
 		StoreFilePath: userData.FolderPath,
 		Conn:          conn,
 		IsOnline:      true,
-		IpAddress:     ip,
+		IpAddress:     strings.Split(conn.RemoteAddr().String(), ":")[0],
 	}
 
+	// Add to connections
 	server.Mutex.Lock()
 	server.Connections[user.UserId] = user
-	server.IpAddresses[ip] = user
+	server.IpAddresses[user.IpAddress] = user
 	server.Mutex.Unlock()
 
-	welcomeMsg := interfaces.MessageData{
-		Id:        helper.GenerateUserId(),
-		Content:   fmt.Sprintf("User %s has joined the chat", user.Username),
-		Sender:    "System",
-		Timestamp: time.Now().Format(time.RFC3339),
-	}
+	// Send confirmation
 
-	go BroadcastMessage(welcomeMsg, server, user)
+	sendSystemMessage(server, fmt.Sprintf("User %s connected", user.Username))
+	conn.SetReadDeadline(time.Time{}) // Reset timeout
 
-	fmt.Printf("New user connected: %s (ID: %s)\n", user.Username, user.UserId)
+	// Start message handler
+	go handleUserMessages(conn, user, server)
 
-	// Start handling messages for the new user
-	handleUserMessages(conn, user, server)
+	fmt.Println(server.Connections)
+
 	return nil
 }
 
@@ -269,80 +317,144 @@ func handleUserMessages(conn *websocket.Conn, user *interfaces.User, server *int
 		delete(server.Connections, user.UserId)
 		delete(server.IpAddresses, user.IpAddress)
 		server.Mutex.Unlock()
-
-		offlineMsg := interfaces.MessageData{
-			Id:        helper.GenerateUserId(),
-			Content:   fmt.Sprintf("User %s has disconnected", user.Username),
-			Sender:    "System",
-			Timestamp: time.Now().Format(time.RFC3339),
-		}
-		go BroadcastMessage(offlineMsg, server, user)
+		conn.Close()
+		sendSystemMessage(server, fmt.Sprintf("User %s has left", user.Username))
 	}()
 
 	for {
-		_, message, err := conn.ReadMessage()
+		var msg WSMessage
+		err := conn.ReadJSON(&msg)
 		if err != nil {
-			return fmt.Errorf("user disconnected: %v", err)
-		}
-
-		var incomingMsg interfaces.MessageData
-		if err := json.Unmarshal(message, &incomingMsg); err != nil {
-			errorMsg := interfaces.MessageData{
-				Id:        helper.GenerateUserId(),
-				Content:   "Invalid message format",
-				Sender:    "System",
-				Timestamp: time.Now().Format(time.RFC3339),
+			// Check if it's a normal closure error
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				fmt.Printf("Connection closed unexpectedly: %v\n", err)
 			}
-			go BroadcastMessage(errorMsg, server, user)
-			continue
+			return nil // Return normally instead of propagating the error
 		}
 
-		if incomingMsg.Content == "" || incomingMsg.Sender == "" {
-			errorMsg := interfaces.MessageData{
-				Id:        helper.GenerateUserId(),
-				Content:   "Message missing required fields",
-				Sender:    "System",
-				Timestamp: time.Now().Format(time.RFC3339),
+		switch msg.Type {
+		case MsgTypeFileReq:
+			var req FileRequest
+			if err := json.Unmarshal(msg.Payload, &req); err != nil {
+				sendError(conn, "invalid file request format")
+				continue
 			}
-			go BroadcastMessage(errorMsg, server, user)
-			continue
-		}
+			HandleFileRequest(server, user, req)
 
-		outgoingMsg := interfaces.MessageData{
-			Id:        helper.GenerateUserId(),
-			Content:   incomingMsg.Content,
-			Sender:    user.Username,
-			Timestamp: time.Now().Format(time.RFC3339),
-			File:      incomingMsg.File,
+		case MsgTypeLookupReq:
+			var req LookupRequest
+			if err := json.Unmarshal(msg.Payload, &req); err != nil {
+				sendError(conn, "invalid lookup request format")
+				continue
+			}
+			HandleLookupRequest(server, user, req)
+
+		case MsgTypeHeartbeat:
+			conn.WriteJSON(WSMessage{Type: MsgTypeHeartbeat})
+
+		default:
+			sendError(conn, "unknown message type")
 		}
-		go BroadcastMessage(outgoingMsg, server, user)
+	}
+}
+
+// HandleFileRequest handles file transfer requests
+func HandleFileRequest(server *interfaces.Server, sender *interfaces.User, req FileRequest) {
+	recipient, exists := server.Connections[req.RecipientID]
+	if !exists {
+		sendError(sender.Conn, "user not found")
+		return
+	}
+
+	msg := WSMessage{
+		Type: MsgTypeFileReq,
+		Payload: json.RawMessage(fmt.Sprintf(`{
+			"senderId": "%s",
+			"filename": "%s",
+			"filesize": %d,
+			"filepath": "%s"
+		}`, sender.UserId, req.Filename, req.Filesize, req.FilePath)),
+	}
+
+	if err := recipient.Conn.WriteJSON(msg); err != nil {
+		sendError(sender.Conn, "failed to send file request")
+	}
+}
+
+// HandleLookupRequest handles directory lookup requests
+func HandleLookupRequest(server *interfaces.Server, sender *interfaces.User, req LookupRequest) {
+	targetUser, exists := server.Connections[req.UserID]
+	if !exists {
+		sendError(sender.Conn, "user not found")
+		return
+	}
+
+	msg := WSMessage{
+		Type:    MsgTypeLookupReq,
+		Payload: json.RawMessage(fmt.Sprintf(`{"requestorId": "%s"}`, sender.UserId)),
+	}
+
+	if err := targetUser.Conn.WriteJSON(msg); err != nil {
+		sendError(sender.Conn, "failed to send lookup request")
+	}
+}
+
+// sendError sends an error message through the WebSocket connection
+func sendError(conn *websocket.Conn, message string) {
+	msg := WSMessage{
+		Type: MsgTypeError,
+		Payload: json.RawMessage(fmt.Sprintf(`{
+			"message": "%s",
+			"timestamp": "%s"
+		}`, message, time.Now().Format(time.RFC3339))),
+	}
+	conn.WriteJSON(msg)
+}
+
+func sendSystemMessage(server *interfaces.Server, content string) {
+	msg := WSMessage{
+		Type: MsgTypeSystem,
+		Payload: json.RawMessage(fmt.Sprintf(`{
+			"id": "%s",
+			"content": "%s",
+			"timestamp": "%s"
+		}`, helper.GenerateUserId(), content, time.Now().Format(time.RFC3339))),
+	}
+
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+
+	for _, user := range server.Connections {
+		if user.Conn != nil && user.IsOnline {
+			user.Conn.WriteJSON(msg)
+		}
 	}
 }
 
 // BroadcastMessage sends a message to all connected users.
-func BroadcastMessage(msgData interfaces.MessageData, server *interfaces.Server, sender *interfaces.User) {
-	server.Mutex.Lock()
-	defer server.Mutex.Unlock()
+// func BroadcastMessage(msgData interfaces.MessageData, server *interfaces.Server, sender *interfaces.User) {
+// 	server.Mutex.Lock()
+// 	defer server.Mutex.Unlock()
 
-	jsonData, err := json.Marshal(msgData)
-	if err != nil {
-		fmt.Printf("Error marshalling message: %v\n", err)
-		return
-	}
+// 	jsonData, err := json.Marshal(msgData)
+// 	if err != nil {
+// 		fmt.Printf("Error marshalling message: %v\n", err)
+// 		return
+// 	}
 
-	for _, user := range server.Connections {
-		if user == sender || !user.IsOnline || user.Conn == nil {
-			continue
-		}
+// 	for _, user := range server.Connections {
+// 		if user == sender || !user.IsOnline || user.Conn == nil {
+// 			continue
+// 		}
 
-		if err := user.Conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
-			fmt.Printf("Error broadcasting to %s: %v\n", user.Username, err)
-			user.IsOnline = false
-			delete(server.Connections, user.UserId)
-			delete(server.IpAddresses, user.IpAddress)
-		}
-	}
-}
+// 		if err := user.Conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
+// 			fmt.Printf("Error broadcasting to %s: %v\n", user.Username, err)
+// 			user.IsOnline = false
+// 			delete(server.Connections, user.UserId)
+// 			delete(server.IpAddresses, user.IpAddress)
+// 		}
+// 	}
+// }
 
 // StartHeartBeat periodically checks the health of connections.
 func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
@@ -352,15 +464,13 @@ func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 			server.Mutex.Lock()
 			for _, user := range server.Connections {
 				if user.IsOnline {
-					if err := user.Conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(BroadcastTimeout)); err != nil {
+					msg := WSMessage{Type: MsgTypeHeartbeat}
+					if err := user.Conn.WriteJSON(msg); err != nil {
 						user.IsOnline = false
-						offlineMsg := interfaces.MessageData{
-							Id:        helper.GenerateUserId(),
-							Content:   fmt.Sprintf("User %s is now offline", user.Username),
-							Sender:    "System",
-							Timestamp: time.Now().Format(time.RFC3339),
+						if websocket.IsUnexpectedCloseError(err) {
+							fmt.Printf("Connection closed for user %s\n", user.Username)
 						}
-						go BroadcastMessage(offlineMsg, server, user)
+						sendSystemMessage(server, fmt.Sprintf("User %s disconnected", user.Username))
 					}
 				}
 			}

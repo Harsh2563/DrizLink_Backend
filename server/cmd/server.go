@@ -36,7 +36,6 @@ func StartServer(ip string) error {
 	defer serversMutex.Unlock()
 
 	server, exists := servers[address]
-	fmt.Println(server, exists)
 	if exists {
 		if server.Running {
 			return errors.New("server is already running. Connect as a client to the server")
